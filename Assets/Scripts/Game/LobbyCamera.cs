@@ -1,3 +1,4 @@
+using GhostHunter.Core;
 using UnityEngine;
 
 namespace GhostHunter.Game
@@ -7,6 +8,8 @@ namespace GhostHunter.Game
     ///
     /// 게임이 시작되면 각자 플레이어의 1인칭 카메라로 넘어가므로 이 카메라는 꺼진다.
     /// 둘 다 켜져 있으면 화면이 겹쳐 보이기 때문에 <b>정확히 하나만</b> 켜져 있어야 한다.
+    ///
+    /// <b>결과 화면에서는 저택을 비추지 않고 검게 덮는다.</b> 아래 <see cref="ApplyBlackout"/> 참고.
     /// </summary>
     [RequireComponent(typeof(Camera))]
     public class LobbyCamera : MonoBehaviour
@@ -14,10 +17,20 @@ namespace GhostHunter.Game
         private Camera cam;
         private AudioListener listener;
 
+        // 결과 화면에서 잠시 덮어쓰기 전의 원래 설정. 대기방으로 돌아갈 때 되돌린다.
+        private CameraClearFlags baseClearFlags;
+        private Color baseBackground;
+        private int baseCullingMask;
+        private bool blackedOut;
+
         private void Awake()
         {
             cam = GetComponent<Camera>();
             listener = GetComponent<AudioListener>();
+
+            baseClearFlags = cam.clearFlags;
+            baseBackground = cam.backgroundColor;
+            baseCullingMask = cam.cullingMask;
         }
 
         private void LateUpdate()

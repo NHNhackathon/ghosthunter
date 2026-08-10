@@ -1,6 +1,7 @@
 using GhostHunter.Game;
 using Unity.Netcode;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace GhostHunter.Player
 {
@@ -73,18 +74,82 @@ namespace GhostHunter.Player
 
         private NetworkPlayer player;
 
-        /// <summary>마지막으로 적용한 상태. 매 프레임 만지지 않기 위한 캐시.</summary>
+        /// <summary>마지막으로 적용한 랜턴 상태. 매 프레임 만지지 않기 위한 캐시.</summary>
         private bool? lanternApplied;
-        private AmbientMode? ambientApplied;
 
-        // 씬에 설정된 원래 값 = 로비·대기방의 밝기. 처음 만지기 직전에 잡는다.
-        private Color baseSky, baseEquator, baseGround, baseFogColor;
-        private float baseFogDensity;
-        private bool baseCaptured;
+        // ── 아래 넷은 전부 static이다 ────────────────────────────────
+        //
+        // <see cref="RenderSettings"/>가 <b>클라이언트당 하나뿐인 전역 설정</b>이므로
+        // 그 상태를 기억하는 값도 하나뿐이어야 한다. 인스턴스 필드로 두면
+        // <b>플레이어 오브젝트가 새로 만들어질 때마다 기억이 초기화</b>돼,
+        // 이미 어두워진 화면을 "원래 밝기"로 잘못 붙잡는 사고가 난다.
+
+        /// <summary>마지막으로 적용한 밝기. 씬이 바뀌면 무효가 된다.</summary>
+        private static AmbientMode? ambientApplied;
+
+        // 씬(Lighting → Environment)에 설정된 값 = 로비·대기방의 밝기.
+        private static Color baseSky, baseEquator, baseGround, baseFogColor;
+        private static float baseFogDensity;
+        private static bool baseCaptured;
 
         private void Awake()
         {
             player = GetComponent<NetworkPlayer>();
+        }
+
+        // ── 씬 값 붙잡기 ────────────────────────────────────────────
+        //
+        // <b>이 시점 선택이 버그의 원인이었다.</b> 예전에는 "처음 손대기 직전"에
+        // 붙잡았는데, 호스트는 <b>MainMenuScene에서 이미 플레이어가 생긴 뒤</b>
+        // GameScene으로 넘어간다. NGO는 씬 전환 때 플레이어 오브젝트를 그대로
+        // 데려가므로, 호스트의 Lantern은 <b>MainMenuScene의 어두운 값</b>
+        // (Ambient 0.047 / Flat)을 "대기방 밝기"로 기억한 채 저택에 들어섰다.
+        // 그래서 판이 끝나 대기방으로 돌아오면 호스트만 캄캄했다 —
+        // 클라이언트는 GameScene에서 처음 생기니 밝은 값(1,1,1 / Gradient)을 잡는다.
+        //
+        // 그래서 지금은 <b>씬이 로드된 직후</b>에 붙잡는다. 그 순간의
+        // RenderSettings는 방금 로드된 씬이 설정한 값 그대로이고, Lantern은
+        // LateUpdate에서만 쓰므로 아직 아무도 덧칠하지 않았다.
+
+        /// <summary>도메인 리로드를 꺼도 플레이할 때마다 확실히 초기화되도록.</summary>
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetStatics()
+        {
+            baseCaptured = false;
+            ambientApplied = null;
+        }
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void HookSceneLoad()
+        {
+            CaptureBase();
+
+            SceneManager.sceneLoaded -= OnSceneLoaded;
+            SceneManager.sceneLoaded += OnSceneLoaded;
+        }
+
+        private static void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+        {
+            // 덧붙이기(Additive)는 조명 설정을 갈아치우지 않는다.
+            if (mode != LoadSceneMode.Single)
+            {
+                return;
+            }
+
+            CaptureBase();
+
+            // 씬이 바뀌면 화면 밝기도 초기화됐다. 캐시를 비워 다음 프레임에 다시 적용한다.
+            ambientApplied = null;
+        }
+
+        private static void CaptureBase()
+        {
+            baseSky = RenderSettings.ambientSkyColor;
+            baseEquator = RenderSettings.ambientEquatorColor;
+            baseGround = RenderSettings.ambientGroundColor;
+            baseFogDensity = RenderSettings.fogDensity;
+            baseFogColor = RenderSettings.fogColor;
+            baseCaptured = true;
         }
 
         public override void OnNetworkSpawn()
@@ -178,19 +243,11 @@ namespace GhostHunter.Player
                 return;
             }
 
-            // 씬 값은 처음 손대기 직전에 잡는다. Awake에서 잡으면
-            // 씬 조명 설정이 아직 적용되기 전일 수 있다.
-            //
-            // 이 값이 곧 <b>로비·대기방의 밝기</b>다. 대기방을 조절할 때는
-            // Lighting → Environment를 만지면 되고, 저택 안의 두 진영은 인스펙터 값이다.
+            // 정상 흐름에서는 씬 로드 시점에 이미 잡혀 있다. 여기 걸린다면
+            // 그 훅을 타지 못한 경우이므로 지금이라도 잡는다.
             if (!baseCaptured)
             {
-                baseSky = RenderSettings.ambientSkyColor;
-                baseEquator = RenderSettings.ambientEquatorColor;
-                baseGround = RenderSettings.ambientGroundColor;
-                baseFogDensity = RenderSettings.fogDensity;
-                baseFogColor = RenderSettings.fogColor;
-                baseCaptured = true;
+                CaptureBase();
             }
 
             ambientApplied = mode;
