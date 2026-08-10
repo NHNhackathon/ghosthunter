@@ -32,11 +32,25 @@ namespace GhostHunter.Game
             Instance != null ? Instance.Phase.Value : GamePhase.Lobby;
 
         /// <summary>
-        /// 지금이 "1인칭으로 조작하는 중"인가.
+        /// 지금이 "1인칭으로 몸을 조작하는 중"인가.
         ///
-        /// 로비와 결과 화면은 마우스로 UI를 눌러야 하므로 1인칭이 아니다.
-        /// 이 값 하나로 카메라·커서·이동·시점을 한꺼번에 전환한다 —
-        /// 각자 판단하게 두면 "커서는 잠겼는데 UI는 떠 있는" 상태가 생긴다.
+        /// <b>대기방도 걸어다니는 공간이다.</b> 그래서 로비는 여기 포함된다 —
+        /// 이동·시점·카메라·커서·이모트·상호작용이 전부 이 값을 따른다.
+        /// 각자 판단하게 두면 "커서는 잠겼는데 UI는 떠 있는" 상태가 생기므로 한 곳에 모은다.
+        ///
+        /// 결과 화면만 예외다. 거기서는 마우스로 버튼을 눌러야 한다.
+        ///
+        /// <b>`Instance != null`을 반드시 같이 본다.</b> MainMenuScene에는 GameManager가 없는데,
+        /// 없다고 `Lobby`로 취급해버리면(예전 방식) 로비 화면 위에 플레이어 1인칭 카메라가
+        /// 뜨고 커서가 잠겨버린다 — GameManager가 존재하는 GameScene에서만 몸을 조작할 수 있다.
+        /// </summary>
+        public static bool IsFirstPersonActive => Instance != null && CurrentPhase != GamePhase.Result;
+
+        /// <summary>
+        /// 지금이 "판이 진행 중"인가.
+        ///
+        /// <see cref="IsFirstPersonActive"/>와 갈라야 한다. 대기방에서는 몸은 움직이지만
+        /// 게이지·타이머·손전등·관전은 아직 의미가 없다 — 그런 것들이 이 값을 본다.
         /// </summary>
         public static bool IsGameplayActive
         {
@@ -48,10 +62,24 @@ namespace GhostHunter.Game
         }
 
         /// <summary>
+        /// 지금 은신이 <b>재은신</b>인가. 판 시작의 첫 은신과 구분한다.
+        ///
+        /// 약점이 하나라도 밝혀졌다면 그 뒤의 은신은 전부 재은신이다.
+        /// </summary>
+        public static bool IsRehiding =>
+            CurrentPhase == GamePhase.Hiding && Instance != null && Instance.FoundWeaknesses.Count > 0;
+
+        /// <summary>
         /// 퇴마사가 움직이고 도구를 다룰 수 있는가 (시나리오 4번 [3]).
         ///
-        /// <b>은신 단계에는 퇴마사가 대기지점에 묶여 있어야 한다.</b> 미리 돌아다니며
-        /// 도구를 주워두면 귀신이 숨을 시간을 준다는 의미 자체가 사라진다.
+        /// <b>첫 은신에만 대기지점에 묶인다.</b> 미리 돌아다니며 도구를 주워두면
+        /// 귀신이 숨을 시간을 준다는 의미 자체가 사라지기 때문이다.
+        ///
+        /// <b>재은신은 다르다.</b> 그때는 이미 조사가 한창인 중이라 퇴마사를 그 자리에
+        /// 얼려두면 판이 멈춘다. 귀신에게 주는 유예는 "퇴마사 정지"가 아니라
+        /// <b>도구 무효화</b>(<see cref="Ghost.GhostController.IsToolNullified"/>)와
+        /// 탐지가 조사 단계에서만 통한다는 규칙으로 이미 보장된다.
+        ///
         /// 이동·상호작용·줍기가 각자 판단하면 한 군데씩 빠뜨리므로 여기로 모은다.
         /// </summary>
         public static bool ExorcistsCanAct
@@ -59,7 +87,7 @@ namespace GhostHunter.Game
             get
             {
                 var phase = CurrentPhase;
-                return phase == GamePhase.Investigation || phase == GamePhase.Hunt;
+                return phase == GamePhase.Investigation || phase == GamePhase.Hunt || IsRehiding;
             }
         }
 
@@ -70,6 +98,9 @@ namespace GhostHunter.Game
 
         [Tooltip("퇴마사들이 대기하는 지점들.")]
         [SerializeField] private Transform[] exorcistSpawnPoints;
+
+        [Tooltip("대기방에서 서 있는 지점. 접속하면 여기로, 판이 끝나도 여기로 돌아온다.")]
+        [SerializeField] private Transform lobbySpawnPoint;
 
         [Tooltip("이 높이보다 아래로 떨어지면 맵 밖으로 본 것이다. 저택 최저점(-22m)보다 낮게 잡을 것.")]
         [SerializeField] private float fallResetHeight = -30f;
@@ -98,8 +129,50 @@ namespace GhostHunter.Game
             NetworkVariableReadPermission.Everyone,
             NetworkVariableWritePermission.Server);
 
+        /// <summary>
+        /// 탐지에 성공해 이미 밝혀진 약점 도구들 (<see cref="ToolType"/>을 int로).
+        ///
+        /// <b>전원에게 공개한다.</b> 탐지에 성공하면 어떤 도구였는지 모두가 알아야
+        /// 팀이 남은 후보를 좁혀 나갈 수 있고, 귀신도 자기 약점이 몇 개 뚫렸는지 알아야
+        /// 사냥으로 밀지 조사를 더 흘릴지 판단할 수 있다.
+        ///
+        /// <b>여기 든 도구로는 다시 탐지할 수 없다.</b> 같은 도구로 반복해서 성공하면
+        /// 재은신 사이클이 무한히 돌아 게임이 끝나지 않는다.
+        /// </summary>
+        public readonly NetworkList<int> FoundWeaknesses = new(
+            new System.Collections.Generic.List<int>(),
+            NetworkVariableReadPermission.Everyone,
+            NetworkVariableWritePermission.Server);
+
+        /// <summary>
+        /// 현실화 게이지 0~100 (시나리오 3-4).
+        ///
+        /// 공포스킬이 성공할 때마다 오르고 100에 닿으면 사냥 단계로 넘어간다.
+        /// <b>양 진영 모두에게 공개한다</b> — 위치 정보를 담지 않으므로 공개해도 은닉이 깨지지 않고,
+        /// 퇴마사에게는 "현실화가 얼마나 임박했는가"라는 압박이 된다.
+        ///
+        /// 이 값이 인원수와 무관하다는 점이 중요하다. 예전의 "생존 퇴마사 전원 흡수" 조건은
+        /// 제단 오답으로 누가 죽는 순간 달성 불가가 되는 예외를 안고 있었는데, 게이지에는 그 문제가 없다.
+        /// </summary>
+        public readonly NetworkVariable<float> MaterializeGauge = new(
+            0f,
+            NetworkVariableReadPermission.Everyone,
+            NetworkVariableWritePermission.Server);
+
+        /// <summary>
+        /// 방장이 대기방에서 정한 밸런스. 전원이 같은 값을 봐야 한다 —
+        /// 탐지 반경 표시처럼 클라이언트도 읽는 값이 섞여 있다.
+        /// </summary>
+        public readonly NetworkVariable<LobbySettings> Settings = new(
+            default,
+            NetworkVariableReadPermission.Everyone,
+            NetworkVariableWritePermission.Server);
+
         /// <summary>서버만 아는 진짜 약점. 절대 공개 NetworkVariable에 넣지 말 것.</summary>
         private WeaknessSet serverWeakness;
+
+        /// <summary>다음 프레임에 판 상태를 초기화해야 하는가. OnNetworkSpawn 주석 참고.</summary>
+        private bool pendingReset;
 
         public WeaknessSet ServerWeakness => serverWeakness;
 
@@ -111,6 +184,94 @@ namespace GhostHunter.Game
                 return;
             }
             Instance = this;
+
+            // <b>에셋을 복제해서 쓴다.</b> ScriptableObject는 파일이라, 방장이 값을 바꾸면
+            // 에디터에서는 그게 그대로 디스크에 남는다 — 플레이 모드를 껐다 켜도 안 돌아오고
+            // git에도 올라간다. 사본에만 쓰면 원본은 손대지 않는다.
+            if (config != null)
+            {
+                config = Instantiate(config);
+            }
+        }
+
+        public override void OnNetworkSpawn()
+        {
+            if (IsServer)
+            {
+                // <b>지난 판의 흔적을 지우고 시작한다.</b> 씬 오브젝트라 Shutdown()으로도
+                // 파괴되지 않아서, 방을 다시 만들면 단계·게이지·약점이 그대로 살아 있다.
+                //
+                // 여기서 바로 하지 않고 한 프레임 미룬다 — 제단·문 같은 다른 씬
+                // NetworkObject가 아직 스폰되기 전일 수 있고, 그러면 그쪽 초기화가
+                // 조용히 무시된다. 씬 오브젝트끼리는 스폰 순서가 보장되지 않는다.
+                pendingReset = true;
+
+                if (config != null)
+                {
+                    // 처음 값은 에셋에 적힌 그대로. 방장이 만지기 전까지 이게 기본값이다.
+                    Settings.Value = LobbySettings.From(config);
+                }
+            }
+
+            Settings.OnValueChanged += OnSettingsChanged;
+            ApplySettings(Settings.Value);
+
+            Phase.OnValueChanged += OnPhaseChangedForAudio;
+        }
+
+        /// <summary>
+        /// 단계 시작 경보음. <b>RPC를 쓰지 않는다</b> — 단계는 이미 전원에게 동기화되므로
+        /// 각자 자기 쪽 변화를 보고 재생하면 그것으로 전원이 듣는다.
+        ///
+        /// 접속 도중에 들어온 사람에게는 울리지 않는다. NetworkVariable의 변경 콜백은
+        /// <b>값이 바뀔 때만</b> 오고 최초 수신 때는 오지 않기 때문이다 — 마침 원하는 동작이다.
+        /// </summary>
+        private void OnPhaseChangedForAudio(GamePhase previous, GamePhase current)
+        {
+            if (current is GamePhase.Investigation or GamePhase.Hunt)
+            {
+                Audio.GameAudio.PlayStageAlarm();
+            }
+        }
+
+        public override void OnNetworkDespawn()
+        {
+            Settings.OnValueChanged -= OnSettingsChanged;
+            Phase.OnValueChanged -= OnPhaseChangedForAudio;
+        }
+
+        private void OnSettingsChanged(LobbySettings previous, LobbySettings current)
+        {
+            ApplySettings(current);
+        }
+
+        /// <summary>
+        /// 동기화된 값을 런타임 사본에 옮긴다.
+        ///
+        /// 이렇게 해두면 <c>GameManager.Config</c>를 읽는 기존 코드는 하나도 안 고쳐도 된다 —
+        /// 읽는 곳이 스무 군데가 넘는데 거기까지 손대면 빠뜨리는 곳이 반드시 생긴다.
+        /// </summary>
+        private void ApplySettings(LobbySettings settings)
+        {
+            // 스폰 직후 서버가 값을 채우기 전에는 전부 0이다. 그대로 적용하면
+            // 조사 시간 0초짜리 판이 된다.
+            if (config == null || settings.InvestigationDuration <= 0f)
+            {
+                return;
+            }
+
+            settings.ApplyTo(config);
+        }
+
+        /// <summary>방장이 대기방에서 밸런스를 바꾼다. 서버 전용.</summary>
+        public void ServerSetSettings(LobbySettings settings)
+        {
+            if (!IsServer || Phase.Value != GamePhase.Lobby)
+            {
+                return;
+            }
+
+            Settings.Value = settings;
         }
 
         public override void OnDestroy()
@@ -136,11 +297,16 @@ namespace GhostHunter.Game
             GenerateWeakness();
             PlaceAtSpawnPoints();
 
+            // 스폰 배치가 끝난 뒤에 초기화해야 본체 좌표가 시작 위치로 잡힌다.
+            ResetGhostStates();
+            MaterializeGauge.Value = 0f;
+
             ToolSpawner.Instance?.SpawnAllTools(config);
             Altar.Instance?.ServerClear();
 
             Result.Value = GameResult.None;
             RevealedWeakness.Value = default;
+            FoundWeaknesses.Clear();
             EnterPhase(GamePhase.Hiding);
         }
 
@@ -150,7 +316,20 @@ namespace GhostHunter.Game
         /// </summary>
         private void AssignRoles()
         {
-            var players = new List<NetworkPlayer>(NetworkPlayer.All);
+            // <b>파괴된 항목을 반드시 걸러낸다.</b> NetworkPlayer.All은 static 리스트라
+            // 비정상 종료로 despawn 콜백을 놓치면 죽은 참조가 남는다. 그대로 두면
+            // Faction 대입에서 예외가 터지며 <b>루프가 중간에 끊겨</b>, 뒤쪽 플레이어들이
+            // 지난 판 진영을 그대로 유지한다 — "매번 같은 사람만 귀신"이 되는 경로다.
+            // 다른 순회(GetGhost, ResetGhostStates 등)는 전부 null을 거르는데 여기만 빠져 있었다.
+            var players = new List<NetworkPlayer>();
+            foreach (var p in NetworkPlayer.All)
+            {
+                if (p != null)
+                {
+                    players.Add(p);
+                }
+            }
+
             if (players.Count == 0)
             {
                 return;
@@ -161,8 +340,10 @@ namespace GhostHunter.Game
             {
                 players[i].Faction.Value = i == ghostIndex ? Faction.Ghost : Faction.Exorcist;
                 players[i].IsAlive.Value = true;
-                players[i].IsAbsorbed.Value = false;
             }
+
+            Debug.Log($"[GameManager] 진영 배정: {players.Count}명 중 {ghostIndex}번째"
+                      + $"(클라 {players[ghostIndex].OwnerClientId})가 귀신.");
         }
 
         /// <summary>
@@ -209,21 +390,97 @@ namespace GhostHunter.Game
             }
         }
 
+        /// <summary>
+        /// 대기방으로 보낸다. 서버 전용.
+        ///
+        /// 접속 직후와 판이 끝난 뒤 모두 여기를 거친다. <b>한 점에 겹쳐 세우지 않는다</b> —
+        /// 다섯 명이 같은 좌표에 생기면 <c>CharacterController</c>끼리 밀어내며 튀어나간다.
+        /// 접속 순번에 따라 원형으로 벌려 세운다.
+        /// </summary>
+        public void ServerSendToLobby(NetworkPlayer player)
+        {
+            if (!IsServer || player == null)
+            {
+                return;
+            }
+
+            if (lobbySpawnPoint == null)
+            {
+                // 조용히 넘어가면 "왜 엉뚱한 데서 시작하지"로만 보인다. 원인을 남긴다.
+                Debug.LogError("[GameManager] lobbySpawnPoint가 비어 있습니다. " +
+                               "인스펙터에서 LobbySpawnPoint를 연결하세요.");
+                return;
+            }
+
+            // 원 위에 순서대로 놓는다. 인원이 늘어도 규칙이 그대로라 자리가 안 겹친다.
+            int index = 0;
+            foreach (var p in NetworkPlayer.All)
+            {
+                if (p == player) break;
+                if (p != null) index++;
+            }
+
+            const float Radius = 1.6f;
+            float angle = index * Mathf.PI * 2f / Mathf.Max(1, GameConfigMaxPlayers);
+            Vector3 offset = new(Mathf.Cos(angle) * Radius, 0f, Mathf.Sin(angle) * Radius);
+
+            // 원 바깥을 보고 서면 서로 등지게 된다. 안쪽(스폰 지점)을 보게 돌린다.
+            Quaternion look = offset.sqrMagnitude > 0.001f
+                ? Quaternion.LookRotation(-offset)
+                : lobbySpawnPoint.rotation;
+
+            Vector3 target = lobbySpawnPoint.position + offset;
+            TeleportPlayer(player, target, look);
+            Debug.Log($"[GameManager] 플레이어 {player.OwnerClientId}를 대기방 {target:F2}에 세웠다.");
+        }
+
+        /// <summary>대기방 배치에 쓰는 인원 기준. 설정이 없으면 5명으로 본다.</summary>
+        private int GameConfigMaxPlayers => config != null ? Mathf.Max(1, config.MaxPlayers) : 5;
+
+        /// <summary>
+        /// 아직 대기방에 못 세운 사람을 세운다. 서버가 매 프레임 확인한다.
+        ///
+        /// <b>스폰 순간에 세우면 안 된다.</b> <c>OnNetworkSpawn</c> 안에서 보낸
+        /// 텔레포트 RPC는 스폰 절차가 끝나기 전이라 그대로 묻힌다 — 호스트가
+        /// 엉뚱한 자리에서 시작하던 원인이 이것이었다. 한 프레임 뒤에 세우면
+        /// 오브젝트가 완전히 자리를 잡은 뒤라 확실히 먹는다.
+        /// </summary>
+        private void PlaceNewcomersInLobby()
+        {
+            foreach (var p in NetworkPlayer.All)
+            {
+                if (p == null || !p.IsSpawned || p.ServerLobbyPlaced)
+                {
+                    continue;
+                }
+
+                p.ServerLobbyPlaced = true;
+                ServerSendToLobby(p);
+            }
+        }
+
+        /// <summary>전원을 다시 세우도록 표시한다. 다음 프레임에 옮겨진다.</summary>
+        private void MarkEveryoneForLobby()
+        {
+            foreach (var p in NetworkPlayer.All)
+            {
+                if (p != null)
+                {
+                    p.ServerLobbyPlaced = false;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 플레이어를 특정 자리로 옮긴다.
+        ///
+        /// <b>서버가 transform을 직접 바꾸면 안 된다.</b> 위치가 소유자 권한이라
+        /// 다음 프레임에 소유자 좌표로 덮어써진다 — 호스트만 옮겨지고 나머지는
+        /// 제자리에 남는다. 실제 이동은 소유자에게 시킨다 (NetworkPlayer.TeleportRpc).
+        /// </summary>
         private static void TeleportPlayer(NetworkPlayer player, Vector3 position, Quaternion rotation)
         {
-            // CharacterController가 켜져 있으면 위치 대입이 무시되므로 잠깐 끈다.
-            var cc = player.GetComponent<CharacterController>();
-            if (cc != null)
-            {
-                cc.enabled = false;
-            }
-
-            player.transform.SetPositionAndRotation(position, rotation);
-
-            if (cc != null)
-            {
-                cc.enabled = true;
-            }
+            player.TeleportRpc(position, rotation);
         }
 
         // ── 단계 전이 ──────────────────────────────────────────────
@@ -240,6 +497,15 @@ namespace GhostHunter.Game
 
             switch (phase)
             {
+                case GamePhase.Hiding:
+                    // 귀신이 자리를 옮겨야 하므로 본체 이동 잠금을 푼다.
+                    //
+                    // <b>영혼 복귀는 여기서 하지 않는다.</b> 탐지 페널티
+                    // (<see cref="Ghost.GhostController.ServerApplyDetectionPenalty"/>)가
+                    // 이미 소유자에게 복귀를 시켰다 — 여기서 또 옮기면 두 번 순간이동한다.
+                    LockGhostBody(false);
+                    break;
+
                 case GamePhase.Investigation:
                     // 은신 종료 → 귀신 본체 고정 (시나리오 4번 [3])
                     LockGhostBody(true);
@@ -249,13 +515,70 @@ namespace GhostHunter.Game
                     // 현실화: 모습과 소리가 함께 드러난다 (기술 문서 6-1).
                     // 실제로 모습을 드러내는 건 각 클라이언트의 GhostVisibility가
                     // 단계를 보고 알아서 한다 — 여기서 따로 명령하지 않는다.
+                    //
+                    // 영혼이 나가 있는 채로 사냥에 들어갈 수 있다. 합쳐주지 않으면
+                    // 옛 본체 자리에 표식이 계속 남는다 (ServerMergeSoulIntoBody 주석 참고).
+                    MergeGhostSoul();
                     LockGhostBody(false);
+
+                    // 흡수 쿨타임(30초)을 처형에 물려주면 1분짜리 사냥이 절반 날아간다.
+                    ResetGhostCooldown();
                     break;
 
                 case GamePhase.Result:
                     RevealedWeakness.Value = serverWeakness;
                     break;
             }
+        }
+
+        /// <summary>이 도구로는 이미 탐지에 성공했는가. 같은 도구를 두 번 쓰지 못하게 막는다.</summary>
+        public bool IsWeaknessFound(ToolType tool)
+        {
+            foreach (int raw in FoundWeaknesses)
+            {
+                if ((ToolType)raw == tool)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// 탐지에 성공했다. 서버 전용 — <see cref="Exorcist.ExorcistInventory"/>가 부른다.
+        ///
+        /// <b>사이클의 심장이다.</b> 약점 하나가 밝혀질 때마다 판이 은신으로 되감기고,
+        /// 조사 시간은 <b>가득 채워져</b> 다시 시작한다(<see cref="EnterPhase"/>의
+        /// <see cref="DurationOf"/>). 남은 시간이 얼마였든 상관없다 —
+        /// "찾아내면 시간을 번다"가 퇴마사 쪽의 유일한 시간 자원이기 때문이다.
+        ///
+        /// 세 번째로 찾아내면 은신으로 돌아가지 않고 그대로 끝난다.
+        /// </summary>
+        public void ServerOnWeaknessFound(ToolType tool)
+        {
+            if (!IsServer || Phase.Value != GamePhase.Investigation || IsWeaknessFound(tool))
+            {
+                return;
+            }
+
+            FoundWeaknesses.Add((int)tool);
+            Debug.Log($"[GameManager] 약점 발견: {tool} ({FoundWeaknesses.Count}/{config.WeaknessCount})");
+
+            if (FoundWeaknesses.Count >= config.WeaknessCount)
+            {
+                // 약점 3종을 모두 밝혀냈다 — 제단을 거치지 않아도 퇴마 성공이다.
+                EndGame(GameResult.ExorcistWin);
+                return;
+            }
+
+            // 아직 남았다 → 재은신.
+            //
+            // <b>페널티를 먼저 건다.</b> 영혼 강제 복귀 + 도구 무효화 + 본체 이동 허용까지가
+            // 예전부터 있던 탐지 페널티 그대로다 (시나리오 3-5). 달라진 건 그 유예가
+            // 조사 시간을 갉아먹는 대신 <b>별도 단계</b>로 떨어져 나왔다는 것뿐이다.
+            // 퇴마사는 그 동안에도 계속 움직인다 — 도구만 듣지 않는다.
+            NetworkPlayer.GetGhost()?.GetComponent<Ghost.GhostController>()?.ServerApplyDetectionPenalty();
+            EnterPhase(GamePhase.Hiding);
         }
 
         private float DurationOf(GamePhase phase) => phase switch
@@ -281,6 +604,41 @@ namespace GhostHunter.Game
             }
         }
 
+        /// <summary>현실화 시 영혼과 본체를 합친다.</summary>
+        private void MergeGhostSoul()
+        {
+            NetworkPlayer.GetGhost()?.GetComponent<GhostController>()?.ServerMergeSoulIntoBody();
+        }
+
+        /// <summary>귀신의 공포스킬 쿨타임을 0으로 되돌린다.</summary>
+        private void ResetGhostCooldown()
+        {
+            NetworkPlayer.GetGhost()?.GetComponent<Ghost.FearSkill>()?.ServerResetCooldown();
+        }
+
+        /// <summary>
+        /// 모든 플레이어의 귀신 상태를 초기화한다.
+        ///
+        /// <b>귀신이었던 사람뿐 아니라 전원에게</b> 돌린다. 다음 판에 누가 귀신이 될지
+        /// 모르는데 지난 판 귀신만 지우면, 그 전 판에 귀신이었던 사람의 찌꺼기가 남는다.
+        /// </summary>
+        private void ResetGhostStates()
+        {
+            foreach (var p in NetworkPlayer.All)
+            {
+                if (p == null)
+                {
+                    continue;
+                }
+
+                p.GetComponent<GhostController>()?.ServerResetForNewRound();
+
+                // 쿨타임도 판을 넘어가면 안 된다. 지난 판 끝에 스킬을 썼다면
+                // 새 판이 시작되자마자 쓸 수 없는 상태로 출발한다.
+                p.GetComponent<Ghost.FearSkill>()?.ServerResetCooldown();
+            }
+        }
+
         /// <summary>
         /// 맵 밖으로 떨어진 플레이어를 되돌린다.
         ///
@@ -294,6 +652,15 @@ namespace GhostHunter.Game
             {
                 if (p == null || p.transform.position.y > fallResetHeight)
                 {
+                    continue;
+                }
+
+                // <b>어디로 되돌릴지는 단계가 정한다.</b> 대기방에서 떨어진 사람을
+                // 저택으로 보내면 시작도 안 한 게임의 한복판에 떨어뜨리는 셈이다.
+                if (Phase.Value == GamePhase.Lobby)
+                {
+                    ServerSendToLobby(p);
+                    Debug.Log($"[GameManager] 대기방 밖으로 떨어진 플레이어 {p.OwnerClientId}를 복귀시켰다.");
                     continue;
                 }
 
@@ -318,11 +685,23 @@ namespace GhostHunter.Game
                 return;
             }
 
+            if (pendingReset)
+            {
+                // 씬 NetworkObject가 전부 스폰된 뒤에 지운다 (OnNetworkSpawn 주석 참고).
+                pendingReset = false;
+                ServerResetToLobby();
+            }
+
             RescueFallenPlayers();
 
             var phase = Phase.Value;
             if (phase is GamePhase.Lobby or GamePhase.Result)
             {
+                // 접속하자마자는 자리를 잡아줄 수 없어 여기서 뒤늦게 세운다.
+                if (phase == GamePhase.Lobby)
+                {
+                    PlaceNewcomersInLobby();
+                }
                 return;
             }
 
@@ -379,8 +758,34 @@ namespace GhostHunter.Game
                 return;
             }
 
+            ServerResetToLobby();
+
+            // 단계만 되돌리면 저택 한복판에 그대로 서 있게 된다. 몸도 같이 옮긴다.
+            MarkEveryoneForLobby();
+        }
+
+        /// <summary>
+        /// 판에 관한 모든 상태를 대기방 기준으로 되돌린다. 서버 전용.
+        ///
+        /// <b>호스트를 다시 시작할 때도 반드시 불러야 한다.</b> 이 컴포넌트는 씬
+        /// 오브젝트라 <c>Shutdown()</c>으로 파괴되지 않는다 — 단계·게이지·약점이
+        /// 메모리에 그대로 남아 있다가, 새 방을 만들면 <b>지난 판이 이어서 돌아간다.</b>
+        /// 호스트의 브라우저가 끊겼다 다시 방을 만들었을 때 바로 이 일이 벌어졌다.
+        /// </summary>
+        private void ServerResetToLobby()
+        {
+            if (!IsServer)
+            {
+                return;
+            }
+
             ToolSpawner.Instance?.DespawnAll();
             Altar.Instance?.ServerClear();
+            Environment.DoorManager.Instance?.ServerCloseAll();
+
+            // 영혼 상태·본체 좌표·본체 고정·쿨타임을 한 번에 지운다.
+            // 하나라도 남으면 새 판이 이전 판 상태를 물려받는다.
+            ResetGhostStates();
 
             foreach (var p in NetworkPlayer.All)
             {
@@ -389,22 +794,22 @@ namespace GhostHunter.Game
                     continue;
                 }
 
-                // 귀신이었다면 본체 고정을 풀어줘야 다음 판에 움직일 수 있다.
-                var ghost = p.GetComponent<GhostController>();
-                if (ghost != null)
-                {
-                    ghost.SetBodyLocked(false);
-                }
-
                 p.Faction.Value = Faction.Unassigned;
                 p.IsAlive.Value = true;
-                p.IsAbsorbed.Value = false;
                 p.Weakness.Value = default;
+
+                // <b>손에 든 도구도 지운다.</b> 바닥의 도구는 DespawnAll이 치우지만
+                // 인벤토리는 플레이어에 붙어 있어서 그쪽으로는 닿지 않는다.
+                // 안 지우면 지난 판에 들고 있던 도구를 그대로 쥔 채 새 판이 시작되고,
+                // 그게 마침 약점이면 첫 판정을 공짜로 얻는다.
+                p.GetComponent<Exorcist.ExorcistInventory>()?.ServerClearAll();
             }
 
             serverWeakness = default;
             RevealedWeakness.Value = default;
+            FoundWeaknesses.Clear();
             Result.Value = GameResult.None;
+            MaterializeGauge.Value = 0f;
 
             Phase.Value = GamePhase.Lobby;
             PhaseTimeRemaining.Value = 0f;
@@ -426,48 +831,29 @@ namespace GhostHunter.Game
                 return;
             }
 
-            // 사망으로 "흡수되지 않은 생존자"가 사라졌을 수 있다 → 현실화 조건 재확인.
-            CheckMaterializationCondition();
+            // 게이지는 인원수와 무관하므로 사망으로 현실화 조건이 바뀌지 않는다.
+            // 예전에는 여기서 "흡수되지 않은 생존자가 사라졌는지"를 다시 확인해야 했다.
         }
 
         /// <summary>
-        /// 현실화 조건은 "흡수되지 않은 생존 퇴마사가 0명"이다 (시나리오 3-4).
+        /// 공포스킬 성공 시 현실화 게이지를 올린다 (시나리오 3-4). 서버 전용.
         ///
-        /// 흡수 카운트와 총 인원을 비교하면 안 된다 — 제단 오답으로 누가 죽는 순간
-        /// 조건이 영영 달성 불가능해져 게임이 멈춘다.
+        /// 100에 닿으면 곧바로 사냥 단계로 넘어간다. 조사 단계가 아니면 아무것도 하지 않는다 —
+        /// 사냥 중의 처형까지 게이지를 올리면 의미가 없다.
         /// </summary>
-        public void CheckMaterializationCondition()
+        public void ServerAddMaterializeGauge(float amount)
         {
             if (!IsServer || Phase.Value != GamePhase.Investigation)
             {
                 return;
             }
 
-            foreach (var p in NetworkPlayer.GetLivingExorcists())
-            {
-                if (!p.IsAbsorbed.Value)
-                {
-                    return; // 아직 남아 있다
-                }
-            }
+            MaterializeGauge.Value = Mathf.Clamp(MaterializeGauge.Value + amount, 0f, 100f);
+            Debug.Log($"[GameManager] 현실화 게이지 {MaterializeGauge.Value:F0}%");
 
-            EnterPhase(GamePhase.Hunt);
-        }
-
-        /// <summary>탐지당하면 영혼 수집이 초기화된다 (시나리오 3-4).</summary>
-        public void ResetAbsorption()
-        {
-            if (!IsServer)
+            if (MaterializeGauge.Value >= 100f)
             {
-                return;
-            }
-
-            foreach (var p in NetworkPlayer.All)
-            {
-                if (p != null && p.IsExorcist)
-                {
-                    p.IsAbsorbed.Value = false;
-                }
+                EnterPhase(GamePhase.Hunt);
             }
         }
     }

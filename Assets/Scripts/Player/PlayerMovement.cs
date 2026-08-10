@@ -124,8 +124,17 @@ namespace GhostHunter.Player
                 return;
             }
 
-            // 로비·결과 화면에서는 중력만 적용하고 조작은 받지 않는다.
-            bool canControl = GameManager.IsGameplayActive && !MovementLocked;
+            // <b>대기방·결과 화면에는 어떤 잠금도 남아 있으면 안 된다.</b>
+            // 이동 잠금은 귀신 본체 고정용이라 판 안에서만 의미가 있는데, 판이 끝난 뒤
+            // 값이 남아 있으면 대기방에서 그대로 굳어버린다 — 실제로 그 버그를 냈다.
+            if (!GameManager.IsGameplayActive)
+            {
+                MovementLocked = false;
+            }
+
+            // 결과 화면에서는 중력만 적용하고 조작은 받지 않는다.
+            // 대기방은 걸어다니는 공간이므로 여기 포함된다.
+            bool canControl = GameManager.IsFirstPersonActive && !MovementLocked;
 
             // 죽은 사람은 움직이지 않는다. 관전 시스템(시나리오 3-6)이 붙기 전까지는
             // 시신이 걸어다니지 않게 하는 것만으로 충분하다.
@@ -142,6 +151,13 @@ namespace GhostHunter.Player
 
             // 이모트 휠을 연 동안에는 마우스가 항목 선택에 쓰이므로 이동도 멈춘다.
             if (emote != null && emote.WheelOpen)
+            {
+                canControl = false;
+            }
+
+            // 게임 설정 단말 같은 창이 떠 있으면 마우스가 UI로 넘어간다. 뒤에서 계속
+            // 걸어다니면 창을 조작하는 동안 벽에 처박힌다.
+            if (PlayerRoleSetup.UiPanelOpen)
             {
                 canControl = false;
             }
@@ -185,14 +201,13 @@ namespace GhostHunter.Player
 
             if (player != null && player.IsGhost)
             {
-                if (GameManager.CurrentPhase == GamePhase.Hunt)
-                {
-                    // 사냥 단계는 이미 퇴마사의 2배다. 여기에 달리기까지 곱하면
-                    // 퇴마사가 손쓸 방법이 없어지므로 배수를 적용하지 않는다.
-                    return cfg.GhostHuntMoveSpeed;
-                }
-
-                // 귀신 달리기는 퇴마사보다 빠르다 — 추격이 성립해야 하기 때문이다.
+                // <b>단계와 무관하게 같은 규칙</b>이다 — 평소엔 걷고 Shift로 달린다.
+                //
+                // 예전에는 사냥 단계만 8m/s로 고정했는데, 그러면 Shift가 아무 반응이
+                // 없어서 조작이 고장난 것처럼 느껴졌다. 최고 속도(8)는 그대로 두고
+                // 그걸 <b>누를 때만</b> 내도록 바꾼 것이라, 추격 상한은 달라지지 않는다.
+                //
+                // 귀신 달리기 배수가 퇴마사(1.6)보다 큰 이유는 추격이 성립해야 하기 때문이다.
                 float ghostFactor = sprinting ? Mathf.Max(1f, cfg.GhostSprintMultiplier) : 1f;
                 return cfg.SoulMoveSpeed * ghostFactor;
             }

@@ -26,13 +26,29 @@ namespace GhostHunter.Core
         [Tooltip("탐지된 후 도구 무효화가 유지되는 시간 = 재은신 여유. 귀신이 도망칠 틈이 없으면 늘린다.")]
         public float ToolNullifyDuration = 15f;
 
-        [Tooltip("도구 사용 시 탐지 반경(m). 이 값이 난이도에 가장 직접적이다.")]
-        public float DetectionRadius = 3f;
+        [Tooltip("도구 사용 시 탐지 사거리(m). 이 거리 안에서 화면에 들어와야 잡힌다. " +
+                 "반경이 아니라 '보이는 거리'이므로 예전 반경보다 크게 잡아야 비슷한 체감이 된다.")]
+        public float DetectionRange = 50f;
+
+        [Tooltip("공포스킬 1회 성공 시 현실화 게이지 상승량(%). " +
+                 "쿨타임과 곱해져 최소 현실화 시간을 만든다 — 기본값이면 30초 × 5회 = 2분. " +
+                 "둘 중 하나만 바꿔도 판의 성격이 달라지므로 항상 함께 볼 것.")]
+        public float AbsorbGaugePerHit = 20f;
+
+        [Tooltip("사냥 단계 지속 시간. 짧으면 퇴마사가 숨어서 버티는 것만으로 이기고, " +
+                 "길면 귀신이 전원을 잡을 시간이 충분해진다.")]
+        public float HuntDuration = 60f;
 
         [Header("── 고정 상수 (조절 불가) ──")]
 
-        [Tooltip("사냥 단계 지속 시간.")]
-        public float HuntDuration = 60f;
+        [Tooltip("탐지가 벽을 통과하는가. 끄면 사이가 막혀 있을 때 실패한다. " +
+                 "켜면 벽 너머 먼 귀신까지 잡혀 사거리만으로는 밸런스를 잡기 어려워진다.")]
+        public bool DetectionThroughWalls = false;
+
+        [Tooltip("탐지가 실패한 이유를 서버 콘솔에 찍는다. 밸런스 조정용. " +
+                 "⚠️ 귀신 위치가 로그에 남으므로 실제 플레이에서는 반드시 꺼둘 것 — " +
+                 "호스트가 퇴마사면 콘솔만 봐도 답을 알게 된다.")]
+        public bool DebugDetection = false;
 
         [Tooltip("퇴마사 이동속도(m/s).")]
         public float ExorcistMoveSpeed = 4f;
@@ -40,14 +56,15 @@ namespace GhostHunter.Core
         [Tooltip("영혼 이동속도(m/s). 벽에 막히는 대신 속도 이점은 주지 않는다.")]
         public float SoulMoveSpeed = 4f;
 
-        [Tooltip("사냥 단계 귀신 이동속도(m/s). 시나리오상 퇴마사의 2배.")]
+        [Tooltip("사용하지 않음. 사냥 단계도 SoulMoveSpeed × GhostSprintMultiplier를 쓴다 " +
+                 "— 단계마다 조작 규칙이 달라지지 않도록 통일했다.")]
         public float GhostHuntMoveSpeed = 8f;
 
         [Tooltip("퇴마사 Shift 달리기 배수.")]
         public float SprintMultiplier = 1.6f;
 
-        [Tooltip("영혼 Shift 달리기 배수. 퇴마사보다 크게 잡아 귀신이 추격에서 우위를 갖는다. " +
-                 "사냥 단계 귀신에게는 적용하지 않는다 — 이미 2배라 곱하면 손쓸 수 없이 빨라진다.")]
+        [Tooltip("귀신 Shift 달리기 배수. 퇴마사보다 크게 잡아 추격에서 우위를 갖는다. " +
+                 "은신·조사·사냥 모든 단계에 동일하게 적용된다.")]
         public float GhostSprintMultiplier = 2f;
 
         [Tooltip("공포스킬 사거리(m). 어몽어스의 칼처럼 밀착해야 발동한다. 사냥 단계의 처형도 같은 거리를 쓴다.")]
@@ -63,8 +80,15 @@ namespace GhostHunter.Core
         [Tooltip("제단에 서로 다른 도구가 이만큼 모이면 판정한다.")]
         public int AltarCapacity = 3;
 
-        [Tooltip("맵에 배치할 도구 총 개수. 종류당 균등하게 나눠 배치된다.")]
-        public int TotalToolCount = 30;
+        [Tooltip("사용하지 않음. 도구는 이제 종류당 정확히 1개씩만 배치된다.")]
+        public int TotalToolCount = 60;
+
+        [Tooltip("도구 사용 후 쿨타임(초). <b>들고 있던 도구 전부</b>에 함께 걸리고, " +
+                 "버리거나 남에게 넘어가도 그 도구를 따라간다.")]
+        public float ToolCooldown = 20f;
+
+        [Tooltip("한 사람이 동시에 들 수 있는 도구 개수. 1~4번 키로 전환한다.")]
+        public int MaxCarriedTools = 4;
 
         [Tooltip("한 방의 최대 인원 (귀신 1 + 퇴마사 4).")]
         public int MaxPlayers = 5;

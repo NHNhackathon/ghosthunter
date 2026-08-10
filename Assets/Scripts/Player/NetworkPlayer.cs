@@ -31,14 +31,10 @@ namespace GhostHunter.Player
             NetworkVariableReadPermission.Everyone,
             NetworkVariableWritePermission.Server);
 
-        /// <summary>
-        /// 영혼을 흡수당했는지. 흡수는 죽음이 아니라 귀신의 현실화 진행도일 뿐이므로,
-        /// 이 값이 true여도 조작·도구 사용·제단 헌납이 전부 그대로 가능해야 한다.
-        /// </summary>
-        public readonly NetworkVariable<bool> IsAbsorbed = new(
-            false,
-            NetworkVariableReadPermission.Everyone,
-            NetworkVariableWritePermission.Server);
+        // 흡수 여부는 더 이상 플레이어별로 추적하지 않는다.
+        // 시나리오 3-4가 "전원 흡수"에서 <b>현실화 게이지</b>로 바뀌면서,
+        // 같은 대상을 몇 번이든 다시 흡수할 수 있게 됐기 때문이다.
+        // 진행도는 GameManager.MaterializeGauge 하나가 갖는다.
 
         public readonly NetworkVariable<FixedString32Bytes> Nickname = new(
             default,
@@ -65,17 +61,126 @@ namespace GhostHunter.Player
         /// <summary>관전 대상이 될 수 있는가 = 살아있는 퇴마사인가 (기술 문서 5-6).</summary>
         public bool IsSpectatable => IsExorcist && IsAlive.Value;
 
+        /// <summary>
+        /// 이 클라이언트가 쓸 닉네임. 접속 화면에서 입력받아 여기 담아두고,
+        /// 플레이어가 스폰되는 순간 서버로 보낸다.
+        ///
+        /// <b>static인 이유</b>: 닉네임을 정하는 시점(접속 전)에는 아직 플레이어 오브젝트가 없다.
+        /// </summary>
+        public static string LocalNickname = string.Empty;
+
+        /// <summary>표시용 이름. 비어 있으면 클라이언트 번호로 대신한다.</summary>
+        public string DisplayName
+        {
+            get
+            {
+                var n = Nickname.Value.ToString();
+                return string.IsNullOrWhiteSpace(n) ? $"플레이어 {OwnerClientId}" : n;
+            }
+        }
+
         public override void OnNetworkSpawn()
         {
             if (!All.Contains(this))
             {
                 All.Add(this);
             }
+
+        }
+
+        /// <summary>닉네임을 서버에 올렸는가. 아래 Update 주석 참고.</summary>
+        private bool nicknameSubmitted;
+
+        /// <summary>
+        /// 닉네임을 서버에 올린다. 클라이언트가 알고 서버가 소유하므로 소유자가 한 번 보낸다.
+        ///
+        /// <b>OnNetworkSpawn에서 보내면 안 된다.</b> 그 시점은 스폰 절차가 끝나기 전이라
+        /// RPC가 그대로 묻힌다 — 닉네임이 영영 비어 "플레이어 0"으로만 보이던 원인이었다.
+        /// 대기방 배치가 같은 이유로 실패했던 것과 똑같은 함정이다.
+        ///
+        /// 첫 조건에서 바로 빠져나오므로 이후 프레임에는 사실상 비용이 없다.
+        /// </summary>
+        private void Update()
+        {
+            if (nicknameSubmitted || !IsSpawned || !IsOwner)
+            {
+                return;
+            }
+
+            nicknameSubmitted = true;
+
+            if (!string.IsNullOrWhiteSpace(LocalNickname))
+            {
+                SubmitNicknameRpc(LocalNickname);
+            }
+        }
+
+        /// <summary>
+        /// 서버가 이 사람을 대기방에 세워줬는가.
+        ///
+        /// <b>스폰하는 순간에는 자리를 잡아줄 수 없다.</b> 그 시점에 보낸
+        /// <see cref="TeleportRpc"/>는 스폰 절차가 끝나기 전이라 묻혀버린다 —
+        /// 호스트가 엉뚱한 곳에서 시작하던 원인이 이것이었다.
+        /// 그래서 GameManager가 다음 프레임부터 이 값을 보고 뒤늦게 세운다.
+        ///
+        /// 이 오브젝트에 얹어두면 플레이어가 나갈 때 같이 사라져, 나갔다 들어온
+        /// 사람이 "이미 세웠다"로 잘못 걸리는 일이 없다.
+        /// </summary>
+        public bool ServerLobbyPlaced { get; set; }
+
+        /// <summary>
+        /// 닉네임 등록. <b>서버가 값을 쓴다</b> — 클라이언트가 직접 쓰면
+        /// 남의 이름까지 바꿀 수 있고, 애초에 WritePermission이 Server다.
+        /// </summary>
+        [Rpc(SendTo.Server)]
+        private void SubmitNicknameRpc(string nickname)
+        {
+            if (string.IsNullOrWhiteSpace(nickname))
+            {
+                return;
+            }
+
+            // FixedString32Bytes를 넘치면 예외가 난다. 넉넉히 잘라 담는다.
+            const int maxLength = 10;
+            if (nickname.Length > maxLength)
+            {
+                nickname = nickname.Substring(0, maxLength);
+            }
+
+            Nickname.Value = nickname;
         }
 
         public override void OnNetworkDespawn()
         {
             All.Remove(this);
+        }
+
+        /// <summary>
+        /// 지정한 자리로 순간이동. <b>반드시 소유자 클라이언트에서 실행돼야 한다.</b>
+        ///
+        /// 위치 동기화가 소유자 권한(<see cref="ClientNetworkTransform"/>)이라,
+        /// <b>서버가 transform을 직접 바꿔봐야 다음 프레임에 소유자가 보낸 좌표로 덮어써진다.</b>
+        /// 호스트만 제자리로 가고 나머지는 그대로 있는 증상이 정확히 이것이다 —
+        /// 호스트는 자기 캐릭터의 소유자이기도 해서 우연히 성공한 것뿐이다.
+        ///
+        /// 서버는 이 RPC를 부르기만 하고, 실제 이동은 각 소유자가 수행한다.
+        /// </summary>
+        [Rpc(SendTo.Owner)]
+        public void TeleportRpc(Vector3 position, Quaternion rotation)
+        {
+            // CharacterController가 켜져 있으면 위치 대입이 무시된다.
+            var cc = GetComponent<CharacterController>();
+            if (cc != null)
+            {
+                cc.enabled = false;
+            }
+
+            transform.SetPositionAndRotation(position, rotation);
+
+            if (cc != null)
+            {
+                cc.enabled = true;
+            }
         }
 
         /// <summary>살아있는 퇴마사 목록. 서버 판정과 관전 목록 양쪽에서 쓴다.</summary>
