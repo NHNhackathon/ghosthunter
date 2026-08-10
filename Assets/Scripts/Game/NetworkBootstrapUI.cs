@@ -1,5 +1,3 @@
-using GhostHunter.Core;
-using GhostHunter.Player;
 using TMPro;
 using Unity.Netcode;
 using UnityEngine;
@@ -9,16 +7,17 @@ using UnityEngine.UI;
 namespace GhostHunter.Game
 {
     /// <summary>
-    /// 개발용 임시 UI. IMGUI라 씬 세팅이 필요 없다.
+    /// 접속이 끊겼을 때를 감시해 연결 끊김 화면(UGUI)을 띄운다.
     ///
-    /// <b>방 만들기·참가·닉네임은 더 이상 여기서 다루지 않는다.</b> MainMenuScene의
-    /// <see cref="UI.LobbyJoinUI"/>가 접속을 전담하고, 방을 만들면 곧바로 GameScene으로
-    /// 넘어간다(<see cref="PreGameLobby.ServerStartGame"/>) — GameScene은 이제 <b>항상
-    /// 접속 후에만</b> 로드된다. 이 클래스는 게임 중 좌측 상단 상태 표시와,
-    /// 결과 화면(승패·"대기방으로 돌아가기")만 그린다.
+    /// <b>이제 화면을 직접 그리지 않는다.</b> 대기방·결과·게임 중 HUD는 전부 UGUI가
+    /// 맡는다 — 대기방은 <see cref="UI.WaitingRoomHudUI"/>, 결과는
+    /// <see cref="UI.ResultHudUI"/>, 게임 중은 <see cref="UI.GameHudController"/>가
+    /// 관리하는 Common/Ghost/Exorcist HUD다. 예전에 이 클래스가 그리던 IMGUI 결과
+    /// 패널은 UGUI 결과 화면과 <b>겹쳐 보여</b> 걷어냈다.
     ///
-    /// <b>연결 끊김 화면만 UGUI다</b>(<see cref="disconnectedPanel"/>, StopHud/DisconnectedPanel).
-    /// 나머지(대기방·결과 요약)는 아직 이 클래스의 IMGUI가 그린다.
+    /// 접속·방 만들기·참가는 MainMenuScene의 <see cref="UI.LobbyJoinUI"/>가 전담하고,
+    /// 방을 만들면 곧바로 GameScene으로 넘어간다(<see cref="PreGameLobby.ServerStartGame"/>) —
+    /// GameScene은 <b>항상 접속 후에만</b> 로드된다.
     /// </summary>
     public class NetworkBootstrapUI : MonoBehaviour
     {
@@ -26,11 +25,6 @@ namespace GhostHunter.Game
         [SerializeField] private GameObject disconnectedPanel;
         [SerializeField] private TextMeshProUGUI disconnectedMessageText;
         [SerializeField] private Button mainMenuButton;
-
-        private const float PanelWidth = 320f;
-        private const float PanelHeight = 260f;
-
-        private GUIStyle titleStyle;
 
         private string statusMessage;
         private bool subscribed;
@@ -162,208 +156,5 @@ namespace GhostHunter.Game
             pendingMessage = null;
         }
 
-        private void OnGUI()
-        {
-            // 기본 폰트에는 한글 글리프가 없어 빌드에서 글자가 사라진다 (UI.HudFont 참고).
-            UI.HudFont.ApplyToSkin();
-
-            var nm = NetworkManager.Singleton;
-            if (nm == null)
-            {
-                GUI.Label(new Rect(10, 10, 400, 24), "NetworkManager가 씬에 없습니다.");
-                return;
-            }
-
-            titleStyle ??= new GUIStyle(GUI.skin.label)
-            {
-                fontSize = 18,
-                fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.MiddleCenter,
-            };
-
-            // <b>기준은 단계가 아니라 "내 몸이 있는가"다.</b>
-            //
-            // GameScene은 항상 접속 후에만 로드되므로 여기 있는 동안 몸이 없다는 것은
-            // "이미 접속이 끊겼다"는 뜻이다(예전엔 "아직 접속 전"도 포함했지만 그 경로는
-            // 이제 MainMenuScene 쪽에만 있다). 결과 화면은 몸은 있지만 "대기방으로" 버튼을
-            // 눌러야 하는 예외다.
-            bool hasBody = Player.NetworkPlayer.GetLocal() != null;
-            bool isResult = GameManager.CurrentPhase == GamePhase.Result;
-
-            // 게임 중(hasBody && !isResult) 표시는 이제 CommonHud/GhostHud/ExorcistHud
-            // (UGUI, GameHudController가 관리)가 대체했으므로 여기서는 아무것도 안 그린다.
-            // DrawInGameHud()의 내용은 참고용으로 아래에 남겨뒀다.
-            if (!hasBody || isResult)
-            {
-                DrawCenterPanel(nm);
-            }
-        }
-
-        /// <summary>대기방·결과 요약 화면. 마우스 커서가 살아 있는 상태다.</summary>
-        private void DrawCenterPanel(NetworkManager nm)
-        {
-            bool connected = nm.IsServer || nm.IsConnectedClient;
-            if (!connected)
-            {
-                // 연결 끊김 화면은 이제 UGUI(ApplyDisconnectedPanel)가 그린다.
-                return;
-            }
-
-            var rect = new Rect(
-                (Screen.width - PanelWidth) * 0.5f,
-                (Screen.height - PanelHeight) * 0.5f,
-                PanelWidth, PanelHeight);
-
-            GUI.Box(rect, GUIContent.none);
-            GUILayout.BeginArea(new Rect(rect.x + 16, rect.y + 16, rect.width - 32, rect.height - 32));
-
-            var manager = GameManager.Instance;
-            bool isResult = manager != null && manager.Phase.Value == GamePhase.Result;
-
-            GUILayout.Label(isResult ? "게임 종료" : "대기방", titleStyle);
-            GUILayout.Space(12);
-
-            GUILayout.Label(nm.IsHost ? "모드: 호스트(방장)" : nm.IsServer ? "모드: 서버" : "모드: 클라이언트");
-
-            // 참가 코드는 방장이 상대에게 알려줘야 하므로 접속 후에도 계속 보여준다.
-            if (!string.IsNullOrEmpty(RelayConnection.JoinCode))
-            {
-                GUILayout.Label($"참가 코드: {RelayConnection.JoinCode}");
-            }
-
-            GUILayout.Label($"접속 인원: {NetworkPlayer.All.Count}명");
-            GUILayout.Space(8);
-
-            if (isResult && manager != null)
-            {
-                GUILayout.Label($"결과: {ResultText(manager.Result.Value)}");
-                GUILayout.Label($"약점: {manager.RevealedWeakness.Value}");
-                GUILayout.Space(8);
-            }
-
-            // 참가자 목록. 닉네임이 비어 있으면 DisplayName이 클라이언트 번호로 대신한다.
-            foreach (var p in NetworkPlayer.All)
-            {
-                if (p == null) continue;
-                string me = p.IsOwner ? " (나)" : "";
-                GUILayout.Label($"· {p.DisplayName}{me}");
-            }
-
-            GUILayout.FlexibleSpace();
-
-            if (nm.IsServer && isResult)
-            {
-                // 시나리오 4번 [7]: 결과 확인 후 대기방으로 돌아가 다시 시작한다.
-                // 이 "대기방"은 MainMenuScene의 로비가 아니라 GameScene 안의 걸어다니는
-                // 대기방이다 — 재시작은 씬을 넘나들지 않는다(LobbyConsole 참고).
-                if (GUILayout.Button("대기방으로 돌아가기", GUILayout.Height(40)))
-                {
-                    manager.ReturnToLobby();
-                }
-            }
-            else if (!nm.IsServer && isResult)
-            {
-                GUILayout.Label("방장이 대기방으로 돌아가기를 기다리는 중…");
-            }
-
-            if (GUILayout.Button("접속 종료"))
-            {
-                nm.Shutdown();
-            }
-
-            GUILayout.EndArea();
-        }
-
-        /// <summary>
-        /// 대기방에 서 있을 때의 좌측 상단 표시.
-        ///
-        /// <b>참가 코드가 여기 있어야 한다.</b> 방장은 대기방을 돌아다니면서 코드를
-        /// 남에게 알려줘야 하는데, 큰 패널이 접힌 뒤라 볼 방법이 이것뿐이다.
-        /// </summary>
-        /// <summary>게임 중 좌측 상단 상태 표시. 1인칭 화면을 가리지 않게 최소한만.</summary>
-        private void DrawInGameHud()
-        {
-            var manager = GameManager.Instance;
-            if (manager == null)
-            {
-                return;
-            }
-
-            // 대기방 정보는 이제 UI.WaitingRoomHudUI(UGUI)가 그린다 — 여기서는 아무것도 안 그린다.
-            if (manager.Phase.Value == GamePhase.Lobby)
-            {
-                return;
-            }
-
-            GUILayout.BeginArea(new Rect(10, 10, 260, 300));
-
-            GUILayout.Label($"단계: {PhaseText(manager.Phase.Value)}");
-            GUILayout.Label($"남은 시간: {Mathf.CeilToInt(manager.PhaseTimeRemaining.Value)}초");
-
-            // 현실화 게이지는 조사 단계에만 의미가 있다. 사냥에 들어가면
-            // 이미 현실화된 뒤이므로 남은 사냥 시간이 그 자리를 대신한다.
-            if (manager.Phase.Value == GamePhase.Investigation)
-            {
-                GUILayout.Label($"현실화: {manager.MaterializeGauge.Value:F0}%");
-            }
-
-            var local = NetworkPlayer.GetLocal();
-            if (local != null)
-            {
-                GUILayout.Label($"진영: {(local.IsGhost ? "귀신" : "퇴마사")}");
-
-                // 약점은 ReadPermission.Owner라 귀신 본인 화면에만 값이 들어온다.
-                // 퇴마사 클라이언트에서는 영원히 비어 있다 — 이게 정상이다.
-                if (local.IsGhost)
-                {
-                    GUILayout.Label($"내 약점: {local.Weakness.Value}");
-                }
-                else
-                {
-                    GUILayout.Label(local.IsAlive.Value ? "생존" : "사망");
-
-                    var inventory = local.GetComponent<Exorcist.ExorcistInventory>();
-                    if (inventory != null)
-                    {
-                        var slots = new System.Text.StringBuilder();
-                        for (int i = 0; i < inventory.Capacity; i++)
-                        {
-                            if (i > 0) slots.Append(' ');
-                            bool selected = i == inventory.SelectedSlot.Value;
-                            if (selected) slots.Append('[');
-                            slots.Append(inventory.HasToolAt(i) ? inventory.TypeAt(i).ToKorean() : "-");
-                            if (selected) slots.Append(']');
-                        }
-                        GUILayout.Label($"소지: {slots}");
-                    }
-                }
-            }
-
-            var altar = Altar.Instance;
-            if (altar != null)
-            {
-                var offered = altar.GetOffered();
-                GUILayout.Label($"제단: {offered.Count}/3");
-            }
-
-            GUILayout.EndArea();
-        }
-
-        private static string PhaseText(GamePhase phase) => phase switch
-        {
-            GamePhase.Lobby => "대기",
-            GamePhase.Hiding => "은신",
-            GamePhase.Investigation => "조사",
-            GamePhase.Hunt => "사냥",
-            GamePhase.Result => "종료",
-            _ => phase.ToString(),
-        };
-
-        private static string ResultText(GameResult result) => result switch
-        {
-            GameResult.ExorcistWin => "퇴마사 승리",
-            GameResult.GhostWin => "귀신 승리",
-            _ => "-",
-        };
     }
 }
