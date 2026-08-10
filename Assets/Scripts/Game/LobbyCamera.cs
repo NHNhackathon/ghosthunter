@@ -55,6 +55,32 @@ namespace GhostHunter.Game
             {
                 listener.enabled = lobbyView;
             }
+
+            ApplyBlackout(GameManager.CurrentPhase == GamePhase.Result);
+        }
+
+        /// <summary>
+        /// 결과 화면에서 저택을 지우고 <b>검은 배경</b>만 남긴다.
+        ///
+        /// 환경광을 내리는 방식으로는 검게 만들 수 없다 — 촛대·램프 같은
+        /// <b>실제 조명은 그대로 남아</b> 주변을 비추기 때문이다. 카메라가 아무것도
+        /// 그리지 않게(<c>cullingMask = 0</c>) 하고 검게 지우는 편이 확실하다.
+        ///
+        /// 결과 UI는 Screen Space - Overlay 캔버스라 카메라와 무관하게 그려지므로
+        /// 여기서 다 지워도 승패·약점 표시는 그대로 보인다.
+        /// </summary>
+        private void ApplyBlackout(bool on)
+        {
+            if (blackedOut == on)
+            {
+                return;
+            }
+
+            blackedOut = on;
+
+            cam.clearFlags = on ? CameraClearFlags.SolidColor : baseClearFlags;
+            cam.backgroundColor = on ? Color.black : baseBackground;
+            cam.cullingMask = on ? 0 : baseCullingMask;
         }
     }
 }
